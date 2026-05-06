@@ -1,0 +1,390 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-05-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages(c("tidyverse", "tidycensus", "censusapi", "readxl", "DBI", "RPostgres"))
+```
+
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(censusapi)
+library(readxl)
+library(DBI)
+library(RPostgres)
+
+
+#SETUP
+
+
+#Census API key
+census_api_key("6c3596bc22282d83e8771618f9a1730895b4b43e", install = TRUE, overwrite = TRUE)
+
+# Connect to PostgreSQL
+con <- dbConnect(
+  RPostgres::Postgres(),
+  dbname   = "postgres",
+  host     = "localhost",
+  port     = 5432,
+  user     = "postgres",
+  password = "Warriors123*"
+)
+```
+
+```{r}
+dbGetQuery(con, "SELECT schema_name FROM information_schema.schemata")
+```
+```{r}
+#LOAD ZILLOW HOUSING PRICE DATA
+
+#Read the Zillow ZHVI CSV
+zillow_raw <- read_csv("Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv")
+
+#Peek at the structure
+glimpse(zillow_raw)
+head(zillow_raw)
+```
+
+```{r}
+#CLEAN & RESHAPE ZILLOW DATA
+
+
+zillow_clean <- zillow_raw %>%
+  # Keep only metro areas, drop the national row
+  filter(RegionType == "msa") %>%
+  
+  # Select only the columns we need
+  select(RegionID, RegionName, StateName, starts_with("20")) %>%
+  
+  # Pivot from wide to long format (one row per metro per month)
+  pivot_longer(
+    cols = starts_with("20"),
+    names_to = "date",
+    values_to = "median_home_value"
+  ) %>%
+  
+  # Parse the date column and extract year/month
+  mutate(
+    date  = as.Date(date),
+    year  = year(date),
+    month = month(date)
+  ) %>%
+  
+  # Filter to our study window 2012-2023
+  filter(year >= 2012 & year <= 2023) %>%
+  
+  # Drop rows with missing home values
+  drop_na(median_home_value) %>%
+  
+  # Rename columns to match our database schema
+  rename(
+    cbsa_code  = RegionID,
+    metro_name = RegionName,
+    state      = StateName
+  ) %>%
+  
+  # Convert cbsa_code to character to match CHAR(5) in postgres
+  mutate(cbsa_code = as.character(cbsa_code))
+
+# Check it looks right
+glimpse(zillow_clean)
+head(zillow_clean)
+```
+
+```{r}
+# LOAD ZILLOW DATA INTO POSTGRESQL
+
+
+# Step 1: Load metro_areas table first (unique metros only)
+# We need this before housing_prices because of the foreign key relationship
+metro_areas_insert <- zillow_clean %>%
+  select(cbsa_code, metro_name, state) %>%
+  distinct() %>%                        # one row per metro, no duplicates
+  mutate(region = case_when(            # assign census region based on state
+    state %in% c("CT","ME","MA","NH","RI","VT","NJ","NY","PA") ~ "Northeast",
+    state %in% c("IL","IN","MI","OH","WI","IA","KS","MN","MO","NE","ND","SD") ~ "Midwest",
+    state %in% c("DE","FL","GA","MD","NC","SC","VA","WV","AL","KY","MS","TN",
+                 "AR","LA","OK","TX","DC") ~ "South",
+    state %in% c("AZ","CO","ID","MT","NV","NM","UT","WY","AK","CA","HI","OR","WA") ~ "West",
+    TRUE ~ "Unknown"
+  ))
+
+# Write metro_areas to PostgreSQL
+dbWriteTable(
+  con,
+  name = Id(schema = "housing", table = "metro_areas"),
+  value = metro_areas_insert,
+  append = TRUE,     # append to existing table (don't overwrite)
+  row.names = FALSE
+)
+
+cat("metro_areas loaded:", nrow(metro_areas_insert), "rows\n")
+
+# Step 2: Load housing_prices table
+housing_prices_insert <- zillow_clean %>%
+  select(cbsa_code, year, month, median_home_value)
+
+dbWriteTable(
+  con,
+  name = Id(schema = "housing", table = "housing_prices"),
+  value = housing_prices_insert,
+  append = TRUE,
+  row.names = FALSE
+)
+
+cat("housing_prices loaded:", nrow(housing_prices_insert), "rows\n")
+```
+
+
+```{r}
+
+# CLEAN & LOAD FREDDIE MAC MORTGAGE RATES
+
+
+# Read the Excel file
+mortgage_raw <- read_excel("historicalweeklydata.xlsx")
+
+# Peek at it so we know what we're working with
+glimpse(mortgage_raw)
+head(mortgage_raw)
+```
+
+```{r}
+
+# CLEAN & LOAD FREDDIE MAC MORTGAGE RATES
+
+
+mortgage_clean <- mortgage_raw %>%
+  # Only keep the date and 30yr rate columns
+  select(date_raw = ...1, rate_raw = ...2) %>%
+  
+  # Drop the header rows and any non-data rows
+  filter(!is.na(date_raw), !date_raw %in% c("Week", "")) %>%
+  
+  # Convert date (stored as Excel serial number) and rate to numeric
+  mutate(
+    date_raw  = as.numeric(date_raw),
+    rate_raw  = as.numeric(rate_raw)
+  ) %>%
+  drop_na() %>%
+  
+  # Convert Excel serial date to actual date
+  mutate(
+    date = as.Date(date_raw, origin = "1899-12-30"),
+    year  = year(date),
+    month = month(date),
+    avg_30yr_rate = rate_raw
+  ) %>%
+  
+  # Filter to our study window and average by month
+  # (Freddie Mac is weekly so we average down to monthly)
+  filter(year >= 2012 & year <= 2023) %>%
+  group_by(year, month) %>%
+  summarise(avg_30yr_rate = round(mean(avg_30yr_rate, na.rm = TRUE), 2),
+            .groups = "drop")
+
+# Check it
+glimpse(mortgage_clean)
+head(mortgage_clean)
+```
+
+```{r}
+# Push mortgage rates to PostgreSQL
+dbWriteTable(
+  con,
+  name = Id(schema = "housing", table = "mortgage_rates"),
+  value = mortgage_clean,
+  append = TRUE,
+  row.names = FALSE
+)
+
+cat("mortgage_rates loaded:", nrow(mortgage_clean), "rows\n")
+```
+
+
+```{r}
+# ============================================================
+# PULL DEMOGRAPHICS FROM TIDYCENSUS (Census ACS 5-year estimates)
+# Variables we want:
+#   B01003_001 = total population
+#   B19013_001 = median household income
+#   B15003_022 = bachelor's degree holders (used to calc % college)
+#   B15003_001 = total population 25+ (denominator for % college)
+# ============================================================
+
+# tidycensus can only pull one year at a time so we loop through 2012-2022
+# (ACS 5-year estimates lag by ~1 year, 2023 not yet available)
+
+years <- 2012:2022
+
+demographics_raw <- map_dfr(years, function(yr) {
+  get_acs(
+    geography = "metropolitan statistical area/micropolitan statistical area",
+    variables = c(
+      population    = "B01003_001",
+      median_income = "B19013_001",
+      bachelors     = "B15003_022",
+      pop_25plus    = "B15003_001"
+    ),
+    year    = yr,
+    survey  = "acs5",
+    output  = "wide"
+  ) %>%
+  mutate(year = yr)
+})
+
+glimpse(demographics_raw)
+```
+
+```{r}
+
+# CLEAN & LOAD DEMOGRAPHICS DATA
+
+
+demographics_clean <- demographics_raw %>%
+  # Keep only the estimate columns, drop margin of error (M) columns
+  select(
+    cbsa_code     = GEOID,
+    year,
+    population    = populationE,
+    median_income = median_incomeE,
+    bachelors     = bachelorsE,
+    pop_25plus    = pop_25plusE
+  ) %>%
+  
+  # Calculate % college educated
+  mutate(
+    pct_college = round((bachelors / pop_25plus) * 100, 2)
+  ) %>%
+  
+  # Drop the intermediate columns we no longer need
+  select(-bachelors, -pop_25plus) %>%
+  
+  # Drop rows with missing key values
+  drop_na(population, median_income)
+
+# Push to PostgreSQL
+dbWriteTable(
+  con,
+  name = Id(schema = "housing", table = "demographics"),
+  value = demographics_clean,
+  append = TRUE,
+  row.names = FALSE
+)
+
+cat("demographics loaded:", nrow(demographics_clean), "rows\n")
+```
+
+
+
+```{r}
+
+# PULL UNEMPLOYMENT FROM TIDYCENSUS
+# Variable: S2301_C04_001 = unemployment rate (ACS Subject Tables)
+
+unemployment_raw <- map_dfr(years, function(yr) {
+  get_acs(
+    geography = "metropolitan statistical area/micropolitan statistical area",
+    variables = c(unemployment_rate = "S2301_C04_001"),
+    year   = yr,
+    survey = "acs5",
+    output = "wide"
+  ) %>%
+  mutate(year = yr)
+})
+
+# Clean it up
+employment_clean <- unemployment_raw %>%
+  select(
+    cbsa_code         = GEOID,
+    year,
+    unemployment_rate = unemployment_rateE
+  ) %>%
+  drop_na(unemployment_rate) %>%
+  # ACS is annual so we set month to 1 as a placeholder
+  mutate(month = 1)
+
+# Push to PostgreSQL
+dbWriteTable(
+  con,
+  name = Id(schema = "housing", table = "employment"),
+  value = employment_clean,
+  append = TRUE,
+  row.names = FALSE
+)
+
+cat("employment loaded:", nrow(employment_clean), "rows\n")
+```
+
+
+```{r}
+
+# FINAL DATA LOAD VERIFICATION
+
+
+tables <- c("metro_areas", "housing_prices", "demographics", 
+            "employment", "mortgage_rates")
+
+for (t in tables) {
+  count <- dbGetQuery(con, glue::glue(
+    "SELECT COUNT(*) as n FROM housing.{t}"
+  ))
+  cat(t, ":", count$n, "rows\n")
+}
+```
+
+
+```{r}
+dbGetQuery(con, "SELECT COUNT(*) FROM housing.metro_areas")
+dbGetQuery(con, "SELECT COUNT(*) FROM housing.housing_prices")
+dbGetQuery(con, "SELECT COUNT(*) FROM housing.demographics")
+dbGetQuery(con, "SELECT COUNT(*) FROM housing.employment")
+dbGetQuery(con, "SELECT COUNT(*) FROM housing.mortgage_rates")
+```
+
+```{r}
+# ============================================================
+# RELOAD DEMOGRAPHICS WITH NAME COLUMN INCLUDED
+# ============================================================
+
+# First clear the existing demographics table
+dbExecute(con, "TRUNCATE TABLE housing.demographics")
+
+# Rebuild with name included
+demographics_clean2 <- demographics_raw %>%
+  select(
+    cbsa_code     = GEOID,
+    metro_name    = NAME,       # include the name this time
+    year,
+    population    = populationE,
+    median_income = median_incomeE,
+    bachelors     = bachelorsE,
+    pop_25plus    = pop_25plusE
+  ) %>%
+  mutate(pct_college = round((bachelors / pop_25plus) * 100, 2)) %>%
+  select(-bachelors, -pop_25plus) %>%
+  drop_na(population, median_income)
+
+# But first we need to add the column to the table in PostgreSQL
+dbExecute(con, "ALTER TABLE housing.demographics ADD COLUMN IF NOT EXISTS metro_name VARCHAR(200)")
+
+# Now reload
+dbWriteTable(
+  con,
+  name = Id(schema = "housing", table = "demographics"),
+  value = demographics_clean2,
+  append = TRUE,
+  row.names = FALSE
+)
+
+cat("demographics reloaded:", nrow(demographics_clean2), "rows\n")
+```
+
+
