@@ -9,7 +9,7 @@ A data analytics project exploring what factors drove housing price appreciation
 - The **West region** had the highest overall price appreciation at over 100% from 2012–2023, driven by remote work migration into Mountain West markets
 - The **top appreciating metros** were not major coastal cities but smaller adjacent markets (Fernley NV, Boise ID, Coeur d'Alene ID) that absorbed migration from expensive hubs
 - The **pandemic boom peaked in 2021** with 18% year-over-year growth in the West — the highest single-year growth rate in the dataset
-- **2023 had the highest home values despite the highest mortgage rates**, illustrating the inventory lock-in effect — homeowners with low fixed rates refused to sell, keeping supply constrained and prices elevated
+- **2023 had the highest home values despite the highest mortgage rates**, illustrating the inventory lock-in effect. Homeowners with low fixed rates refused to sell, keeping supply constrained and prices elevated
 
 ## Data Sources
 | Dataset | Source | Description |
