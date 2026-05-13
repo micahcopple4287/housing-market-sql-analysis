@@ -14,7 +14,7 @@ ORDER BY m.region, hp.year;
 
 
 -- QUERY 2: Price appreciation by region (2012 vs 2023)
--- Shows % change in home values over our study window
+-- Shows % change in home values over the window
 
 WITH base_year AS (
     SELECT 
