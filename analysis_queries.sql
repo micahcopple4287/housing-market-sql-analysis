@@ -1,5 +1,6 @@
 -- QUERY 1: Average annual home price by region
 -- Shows which regions appreciated fastest 2012-2023
+-- For each region and each year, find the average home value across all metro areas in that region.
 
 SELECT 
     m.region,
@@ -15,6 +16,7 @@ ORDER BY m.region, hp.year;
 
 -- QUERY 2: Price appreciation by region (2012 vs 2023)
 -- Shows % change in home values over the window
+-- Calculate what percentage home values grew from 2012 to 2023 for each region, sorted from highest to lowest appreciation.
 
 WITH base_year AS (
     SELECT 
@@ -48,6 +50,8 @@ ORDER BY pct_change DESC;
 
 -- QUERY 3: National avg home price vs mortgage rate by year
 -- Key research question: do higher rates suppress prices?
+-- For each year, show the national average home value alongside the average 30-year mortgage rate. 
+-- This lets me visually compare whether rate increases correlate with price changes,
 
 SELECT
     hp.year,
@@ -63,6 +67,8 @@ ORDER BY hp.year;
 -- QUERY 4: Do higher income metros have more price appreciation?
 -- Joins housing prices with demographics to compare
 -- income levels vs home value growth
+-- For each metro area, calculate both its average household income and its home price appreciation from 2012 to 2023
+-- Then show the top 20 highest-appreciating metros alongside their income levels to see if wealthier metros appreciated faster
 
 WITH appreciation AS (
     SELECT
@@ -101,6 +107,7 @@ LIMIT 20;
 
 -- QUERY 5: Year-over-year price growth rate by region
 -- Uses a window function (LAG) to compare each year to the prior
+--  For each region and year, show the average home price alongside what it was the prior year, and calculate the YOY percentage growth
 
 WITH annual_prices AS (
     SELECT
@@ -123,4 +130,6 @@ SELECT
     , 1) AS yoy_growth_pct
 FROM annual_prices
 ORDER BY region, year;
+
+
 
